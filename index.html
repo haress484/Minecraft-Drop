@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Minecraft Drop</title>
 <link href="https://fonts.googleapis.com/css2?family=VT323&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <style>
     * { margin:0; padding:0; box-sizing:border-box; user-select:none; -webkit-tap-highlight-color:transparent; }
     html,body { width:100%; height:100%; overflow:hidden; touch-action:manipulation; }
@@ -34,6 +35,16 @@
     .menu-icon { font-size:24px; margin-bottom:4px; }
     .screen { position:absolute; top:60px; left:0; right:0; bottom:70px; display:none; overflow-y:auto; }
     .screen.active { display:block; }
+    body.abyss #top-bar, body.abyss #bottom-menu, body.abyss #round-ui { display:none !important; }
+    body.abyss #depth-ui { top:10px; color:#7fff3f; text-shadow:0 0 10px #7fff3f, 2px 2px 0 #000; }
+    body.tess #top-bar, body.tess #bottom-menu, body.tess #round-ui, body.tess #depth-ui, body.tess #ui-layer { display:none !important; }
+    #depth-ui { position:absolute; top:66px; left:50%; transform:translateX(-50%); color:#fff;
+        font-size:clamp(16px,2.6vw,22px); text-shadow:2px 2px 0 #000; z-index:5; pointer-events:none; display:none; }
+    #joystick { position:absolute; left:24px; bottom:90px; width:130px; height:130px; border-radius:50%;
+        background:rgba(127,255,63,0.10); border:2px solid rgba(127,255,63,0.5); display:none; z-index:60; touch-action:none; }
+    body.abyss #joystick { display:block; }
+    #joy-knob { position:absolute; left:50%; top:50%; width:54px; height:54px; margin:-27px 0 0 -27px;
+        border-radius:50%; background:rgba(127,255,63,0.55); box-shadow:0 0 12px rgba(127,255,63,0.7); }
     #profile-screen { padding:20px; background:#2a2a2a; }
     .profile-section { background:#3a3a3a; padding:15px; margin-bottom:15px; border-radius:8px; border:2px solid #555; }
     .profile-section h3 { color:#fff; margin-bottom:10px; font-size:24px; }
@@ -168,13 +179,20 @@
     .dev-money-row { display:flex; gap:6px; align-items:center; margin:6px 0; }
     #dev-amount { width:90px; padding:6px; font-family:'VT323',monospace; font-size:18px; background:#111;
         color:#7f6; border:2px solid #666; border-radius:4px; }
-    .dev-money-row button { width:44px; margin:0; padding:6px 0; font-size:22px; }
     #dev-depth { width:90px; padding:6px; font-family:'VT323',monospace; font-size:18px; background:#111;
         color:#7f6; border:2px solid #666; border-radius:4px; }
     #dev-jump { width:auto; flex:1; }
+    .dev-money-row button { width:44px; margin:0; padding:6px 0; font-size:22px; }
     .spd-row { display:flex; gap:6px; margin:6px 0; }
     .spd { flex:1; margin:0 !important; }
     .spd.active { background:#5D9E50 !important; border-color:#3A6B32 !important; }
+    /* ТЕССЕРАКТ: поворот ТОЛЬКО этого слоя и ТОЛЬКО по классу rot90 */
+    #tess-wrap { position:fixed; inset:0; display:none; z-index:400; background:#000; touch-action:none; }
+    #tess-wrap.rot90 { top:50%; left:50%; right:auto; bottom:auto; width:100vh; height:100vw;
+        transform:translate(-50%,-50%) rotate(90deg); }
+    #tess-wrap canvas { display:block; width:100%; height:100%; }
+    #flash { position:fixed; inset:0; background:#fff; opacity:0; pointer-events:none; z-index:500;
+        transition:opacity 1.8s ease; }
     @media (max-width:600px) {
         :root { --rs: min(38vh, 220px); }
         .r-item { height:56px; }
@@ -204,8 +222,10 @@
 <div id="play-screen" class="screen active">
     <canvas id="game-canvas"></canvas>
     <div id="ui-layer"><div><span id="fps-box"><span id="fps">60</span> FPS</span></div></div>
+    <div id="depth-ui">Глубина: 0</div>
     <div id="round-ui">За раунд: <span id="round-win">0.00</span> <span class="em"></span></div>
     <div id="err-layer"></div>
+    <div id="joystick"><div id="joy-knob"></div></div>
     <div id="bet-ui">
         <div id="roulette-wrap">
             <div id="roulette-window"><div id="roulette-strip"></div></div>
@@ -328,28 +348,48 @@
     <button id="dev-reset">Сброс сохранения</button>
 </div>
 
+<div id="tess-wrap"></div>
+<div id="flash"></div>
+
 <script>
 window.addEventListener('error', e => { document.getElementById('err-layer').innerText = 'ERR: ' + e.message; });
 
-// ЗВУК ЛАЗЕРА
+// ЗВУКИ
 const LASER_SOUND_URL = "https://raw.githubusercontent.com/haress484/Minecraft-Drop/main/laser-ray_f1qcdy4_.mp3";
 let laserAudio = null;
 function startLaserSound(){
     if(!LASER_SOUND_URL || !audioUnlocked) return;
     if(!laserAudio){ laserAudio = new Audio(LASER_SOUND_URL); laserAudio.loop = true; }
-    laserAudio.currentTime = 0;
-    laserAudio.volume = 0.5;
+    laserAudio.currentTime = 0; laserAudio.volume = 0.5;
     laserAudio.play().catch(()=>{});
 }
-function stopLaserSound(){
-    if(laserAudio){ laserAudio.pause(); laserAudio.currentTime = 0; }
+function stopLaserSound(){ if(laserAudio){ laserAudio.pause(); laserAudio.currentTime = 0; } }
+let abyssAudio = null;
+
+// ОРИЕНТАЦИЯ: поворот живёт ТОЛЬКО на #tess-wrap.rot90, body не трогаем вообще
+const tessWrapEl = document.getElementById('tess-wrap');
+function isMobile(){ return ('ontouchstart' in window) || navigator.maxTouchPoints>0; }
+function isRot(){ return tessWrapEl.classList.contains('rot90'); }
+function mapDelta(dx,dy){ return isRot()? {x:dy, y:-dx} : {x:dx, y:dy}; }
+function toLogical(cx,cy){ return isRot()? {x:cy, y:window.innerWidth-cx} : {x:cx, y:cy}; }
+function setTessRotation(){
+    if(tessActive && isMobile() && window.innerHeight>window.innerWidth) tessWrapEl.classList.add('rot90');
+    else tessWrapEl.classList.remove('rot90');
+    void tessWrapEl.offsetWidth;
 }
 
-// ГЛОБАЛЬНЫЕ ЧИТ-ФЛАГИ
-let timeScale = 1;
-let alwaysWin = false;
-let godMode = false;      // бессмертие: HP не тратится
-let musicOff = localStorage.getItem('musicOff') === '1';
+// БЕЗДНА
+const ABYSS_DEPTH = 10000;
+const BLEND_START = 9800;
+let abyssMode = false, prevAbyss = false, abyssAnnounced = false;
+let abyssCubes = [], nextHoleDepth = 0, cubeTime = 0, cubeDeath = false;
+let viewZoom = 1, lensK = 0, lensHX = 0, lensHY = 0;
+let deathT = 0, dyingHole = null;
+let tSec = 0;
+let lensBuffer = null, lctx = null;
+let tessActive = false;
+const STARS = [];
+for(let i=0;i<110;i++) STARS.push({x:Math.random(), y:Math.random(), p:Math.random()*6, c:['#fff','#c9a6ff','#8f6bff'][Math.floor(Math.random()*3)]});
 
 let emeraldSprite = null;
 function buildEmeraldSprite(){
@@ -368,11 +408,9 @@ function fillEmeraldSpans(){
         if(span.querySelector('canvas')) return;
         const c = document.createElement('canvas');
         c.className = 'emerald-icon';
-        c.width = emeraldSprite.width;
-        c.height = emeraldSprite.height;
+        c.width = emeraldSprite.width; c.height = emeraldSprite.height;
         c.getContext('2d').drawImage(emeraldSprite, 0, 0);
-        span.innerHTML = '';
-        span.appendChild(c);
+        span.innerHTML = ''; span.appendChild(c);
     });
 }
 function emHTML(){ return '<span class="em"></span>'; }
@@ -428,7 +466,8 @@ const RUS = {
  'potion':'Зелье','splash_potion':'Взрывное зелье','lingering_potion':'Оседающее зелье','glass_bottle':'Стеклянная бутылка','honey_bottle':'Бутылка мёда','honeycomb':'Пчелиные соты',
  'firework_rocket':'Фейерверк','firework_star':'Звезда фейерверка','fire_charge':'Огненный заряд','brush':'Кисть','goat_horn':'Рог козы',
  'dragon_breath':'Драконье дыхание','end_crystal':'Кристалл Энда','bundle':'Мешок','pointed_dripstone':'Капельниковый сталактит','chain':'Цепь','nether_sprouts':'Незерские ростки',
- 'netherite_upgrade_smithing_template':'Шаблон незеритового улучшения','rainbow_crystal':'Радужный самоцвет'
+ 'netherite_upgrade_smithing_template':'Шаблон незеритового улучшения','rainbow_crystal':'Радужный самоцвет',
+ 'void_stone':'Камень пустоты','void_ore':'Кислотная руда','void_crystal':'Кристалл бездны'
 };
 const COLOR = { black:'Чёрный', blue:'Синий', brown:'Коричневый', cyan:'Бирюзовый', gray:'Серый', green:'Зелёный',
  light_blue:'Голубой', light_gray:'Светло-серый', lime:'Лаймовый', magenta:'Пурпурный', orange:'Оранжевый',
@@ -560,13 +599,8 @@ function renderInventory() {
         const cnt = document.createElement('span'); cnt.className = 'inv-count'; cnt.textContent = 'x' + inventory[n]; cell.appendChild(cnt);
         const bs = document.createElement('div'); bs.className = 'inv-btns';
         const b1 = document.createElement('button');
-        if (n === 'chest') {
-            b1.textContent = 'Открыть';
-            b1.addEventListener('click', () => openOneChestFromInv());
-        } else {
-            b1.textContent = 'Продать';
-            b1.addEventListener('click', () => sellItem(n));
-        }
+        if (n === 'chest') { b1.textContent = 'Открыть'; b1.addEventListener('click', () => openOneChestFromInv()); }
+        else { b1.textContent = 'Продать'; b1.addEventListener('click', () => sellItem(n)); }
         const b2 = document.createElement('button'); b2.textContent = 'В апгрейд';
         b2.addEventListener('click', () => goToUpgrade(n));
         bs.appendChild(b1); bs.appendChild(b2); cell.appendChild(bs);
@@ -708,9 +742,10 @@ const assets = {
         pick_iron:BASE_URL+"iron_pickaxe.png", pick_gold:BASE_URL+"golden_pickaxe.png",
         pick_diamond:BASE_URL+"diamond_pickaxe.png", explosion:BASE_URL+"explosion.png",
         smoke:BASE_URL+"smoke.png", frame:BASE_URL+"frame.png",
-        rainbow_crystal:BASE_URL+"rainbow_crystal.jpg", rainbow_pick:BASE_URL+"rainbow_pickaxe.png"
+        rainbow_crystal:BASE_URL+"rainbow_crystal.jpg", rainbow_pick:BASE_URL+"rainbow_pickaxe.png",
+        abyss_bg:BASE_URL+"abyss_bg.png.jpe"
     },
-    audio: { music:BASE_URL+"MUSIC.mp3", dig:BASE_URL+"digging_sound.mp3" }
+    audio: { music:BASE_URL+"MUSIC.mp3", dig:BASE_URL+"digging_sound.mp3", abyss:BASE_URL+"abyss_ambient.mp3" }
 };
 const loadingBlocks = ['grass','dirt','stone','sand','coal','iron','diamond_ore','workbench','tnt','slime','obsidian'];
 const loadedImages = {}, sprites = {}, loadedAudio = {};
@@ -827,11 +862,12 @@ const BLOCKS = {
     coal:{hits:2, mult:0.0002}, iron:{hits:2, mult:0.001}, redstone:{hits:3, mult:0.005},
     diamond_ore:{hits:3, mult:0.1}, diamond_block:{hits:5, mult:1},
     workbench:{hits:0}, tnt:{hits:0}, slime:{hits:0}, chest:{hits:2},
-    obsidian:{hits:Infinity}, rainbow_crystal:{hits:1, boost:true}
+    obsidian:{hits:Infinity}, rainbow_crystal:{hits:1, boost:true},
+    void_stone:{hits:1, mult:0.02}, void_ore:{hits:2, mult:0.5}, void_crystal:{hits:3, mult:3}
 };
 const BLOCK_COLORS = {grass:'#5D9E50',dirt:'#8B5A2B',sand:'#E0D080',stone:'#7d7d7d',coal:'#333',iron:'#d8af93',
     redstone:'#c00',diamond_ore:'#4ee',diamond_block:'#3ff',workbench:'#964',tnt:'#f33',slime:'#7c6',chest:'#8a5a2b',
-    obsidian:'#1a1025',rainbow_crystal:'#fff'};
+    obsidian:'#1a1025',rainbow_crystal:'#fff',void_stone:'#171021',void_ore:'#7fff3f',void_crystal:'#b6ff7a'};
 let COLS=9, B=48; const CHUNK=16;
 function computeMineDims(){ B = screenW<600 ? 32 : 48; COLS = Math.min(17, Math.max(7, Math.floor(screenW*0.95/B)-2)); }
 
@@ -849,7 +885,7 @@ function makeChestSprite(s){
 function buildCaches(){
     blockCache={}; pickCache={};
     for(const k of Object.keys(BLOCKS)){
-        if(k==='rainbow_crystal') continue;
+        if(k==='rainbow_crystal'||k==='void_stone'||k==='void_ore'||k==='void_crystal') continue;
         const img=loadedImages[k]; if(!img) continue;
         const c=document.createElement('canvas'); c.width=B; c.height=B;
         const cx=c.getContext('2d'); cx.imageSmoothingEnabled=false; cx.drawImage(img,0,0,B,B);
@@ -891,6 +927,14 @@ function genChunk(startDepth){
     const rows=[];
     for(let i=0;i<CHUNK;i++){
         const depth=startDepth+i;
+        if(depth>=ABYSS_DEPTH){
+            rows.push(new Array(COLS+2).fill(null));
+            if(depth>=nextHoleDepth){
+                abyssCubes.push({ row:depth, col:2+Math.floor(Math.random()*Math.max(1,COLS-3)), phase:Math.random()*6 });
+                nextHoleDepth = depth + 100 + Math.random()*50;
+            }
+            continue;
+        }
         const row=new Array(COLS+2).fill(null);
         row[0]='obsidian'; row[COLS+1]='obsidian';
         for(let c=1;c<=COLS;c++){
@@ -930,6 +974,8 @@ function setBlock(r,c,v){ if(r>=0&&c>=0&&c<=COLS+1&&mineRows[r]){ mineRows[r][c]
 
 let balance=2500, state='bet', camY=0, camX=0, drop=null, bet=100, roundWin=0, chestsFound=0;
 let particles=[], floats=[], screenW=0, screenH=0;
+let timeScale=1, alwaysWin=false, godMode=false;
+let musicOff = localStorage.getItem('musicOff') === '1';
 let devForceBoost = false;
 let pendingBoostQueue = 0;
 const gameCanvas=document.getElementById('game-canvas');
@@ -939,24 +985,54 @@ function resize(){
     screenW=Math.round(r.width); screenH=Math.round(r.height);
     gameCanvas.width=screenW; gameCanvas.height=screenH;
     ctx.setTransform(1,0,0,1,0,0); ctx.imageSmoothingEnabled=false;
+    lensBuffer=document.createElement('canvas'); lensBuffer.width=screenW; lensBuffer.height=screenH;
+    lctx=lensBuffer.getContext('2d');
     buildCaches();
+    if(tessActive) tessResize();
 }
-window.addEventListener('resize',resize);
-window.addEventListener('orientationchange',()=>setTimeout(resize,100));
-function updateBalanceUI(){
-    document.getElementById('balance').innerText=balance.toFixed(2);
-    refreshEmeralds();
-}
-function updateRoundUI(){
-    document.getElementById('round-win').innerText=roundWin.toFixed(2);
-    refreshEmeralds();
-}
+window.addEventListener('resize',()=>{ resize(); });
+window.addEventListener('orientationchange',()=>setTimeout(()=>{
+    if(tessActive){ setTessRotation(); tessResize(); }
+    else resize();
+},150));
+function updateBalanceUI(){ document.getElementById('balance').innerText=balance.toFixed(2); refreshEmeralds(); }
+function updateRoundUI(){ document.getElementById('round-win').innerText=roundWin.toFixed(2); refreshEmeralds(); }
 function addFloat(x,y,t,col='#fff',icon=null){
     if(floats.length>40)floats.shift();
     floats.push({x,y,text:t,color:col,life:1.2,icon:icon});
 }
 function addBreakParticles(wx,wy,key){ if(particles.length>250)return;
     for(let i=0;i<8;i++) particles.push({x:wx,y:wy,vx:(Math.random()-0.5)*5,vy:(Math.random()-0.5)*5-2,life:0.7,size:4+Math.random()*4,color:BLOCK_COLORS[key]||'#888'}); }
+
+// ДЖОЙСТИК (Бездна)
+let joyX=0, joyY=0, joyActive=false, joyId=null;
+const joyEl=document.getElementById('joystick'), joyKnob=document.getElementById('joy-knob');
+function moveJoy(e){
+    const r=joyEl.getBoundingClientRect();
+    const cxv=r.left+r.width/2, cyv=r.top+r.height/2;
+    const d=mapDelta(e.clientX-cxv, e.clientY-cyv);
+    const max=r.width/2-12;
+    const len=Math.hypot(d.x,d.y)||1;
+    const k=Math.min(1,len/max);
+    joyX=d.x/len*k; joyY=d.y/len*k;
+    joyKnob.style.transform=`translate(${joyX*max*0.7}px,${joyY*max*0.7}px)`;
+}
+joyEl.addEventListener('pointerdown',e=>{ joyActive=true; joyId=e.pointerId; joyEl.setPointerCapture(e.pointerId); moveJoy(e); });
+joyEl.addEventListener('pointermove',e=>{ if(joyActive&&e.pointerId===joyId) moveJoy(e); });
+function endJoy(e){ if(e.pointerId===joyId){ joyActive=false; joyId=null; joyX=0; joyY=0; joyKnob.style.transform='translate(0,0)'; } }
+joyEl.addEventListener('pointerup',endJoy);
+joyEl.addEventListener('pointercancel',endJoy);
+const keys={};
+window.addEventListener('keydown',e=>{ keys[e.code]=true; });
+window.addEventListener('keyup',e=>{ keys[e.code]=false; });
+function keyJoy(){
+    let x=0,y=0;
+    if(keys['KeyW']||keys['ArrowUp'])y=-1;
+    if(keys['KeyS']||keys['ArrowDown'])y=1;
+    if(keys['KeyA']||keys['ArrowLeft'])x=-1;
+    if(keys['KeyD']||keys['ArrowRight'])x=1;
+    return {x,y};
+}
 
 const strip=document.getElementById('roulette-strip');
 const rouletteWindow=document.getElementById('roulette-window');
@@ -1014,10 +1090,7 @@ playBtn.addEventListener('click',()=>{
 });
 
 function closeResultAndReset(){
-    if(chestsFound>0){
-        addItem('chest', chestsFound);
-        chestsFound=0;
-    }
+    if(chestsFound>0){ addItem('chest', chestsFound); chestsFound=0; }
     document.getElementById('result-overlay').style.display='none';
     resetRound();
 }
@@ -1106,6 +1179,11 @@ function resetRound(){
     mineRows=[]; blockHp={}; particles=[]; floats=[]; drop=null; roundWin=0; chestsFound=0;
     pendingBoostQueue=0;
     stopLaserSound();
+    abyssMode=false; prevAbyss=false; abyssAnnounced=false; cubeTime=0; cubeDeath=false;
+    abyssCubes=[]; nextHoleDepth = ABYSS_DEPTH + 40 + Math.random()*40;
+    viewZoom=1; lensK=0; deathT=0; dyingHole=null;
+    document.body.classList.remove('abyss');
+    applyAbyssMusic();
     updateRoundUI(); buildCaches();
     camY=-screenH*0.60;
     boostState=null;
@@ -1186,10 +1264,7 @@ function destroySector(px,py,a0,a1,len){
                 boostState.pendingWorkbenches=(boostState.pendingWorkbenches||0)+1;
                 addFloat(wx,wy,'ВЕРСТАК В ЗАПАС!','#ff0');
             }
-            else if(key==='rainbow_crystal'){
-                pendingBoostQueue++;
-                addFloat(wx,wy,'🌈 БУСТЕР В ОЧЕРЕДИ!','#f0f');
-            }
+            else if(key==='rainbow_crystal'){ pendingBoostQueue++; addFloat(wx,wy,'🌈 БУСТЕР В ОЧЕРЕДИ!','#f0f'); }
             else if(key==='chest'){ chestsFound++; addFloat(wx,wy,'СУНДУК!','#fd0'); }
             else if(BLOCKS[key].mult){
                 const gain=bet*BLOCKS[key].mult*0.5*moneyMult;
@@ -1208,8 +1283,7 @@ function updateBoost(dt){
     if(boostState.phase === 'fly'){
         const duration = 1.2;
         const p = Math.min(1, boostState.t / duration);
-        const centerX = screenW/2;
-        const centerY = screenH/2 + camY;
+        const centerX = screenW/2, centerY = screenH/2 + camY;
         boostState.spiralAngle += dt * 8;
         const startRadius = Math.hypot(boostState.boostX - centerX, boostState.boostY - centerY);
         const curRadius = startRadius * (1 - p);
@@ -1224,8 +1298,7 @@ function updateBoost(dt){
         const duration = 0.8;
         const p = Math.min(1, boostState.t / duration);
         boostState.flashAlpha = Math.sin(p * Math.PI) * 1.2;
-        drop.x = screenW/2;
-        drop.y = screenH/2 + camY;
+        drop.x = screenW/2; drop.y = screenH/2 + camY;
         drop.size = 2.5;
         drop.angle += dt * 2;
         if(boostState.t >= duration){ boostState.phase = 'beam'; boostState.t = 0; boostState.beamAngle=0; boostState.beamLen=0; startLaserSound(); }
@@ -1239,8 +1312,7 @@ function updateBoost(dt){
         if(t < extendDur){
             const newLen = (t/extendDur)*R;
             destroySector(px,py,0,0.0001,newLen);
-            boostState.beamLen = newLen;
-            boostState.beamAngle = 0;
+            boostState.beamLen = newLen; boostState.beamAngle = 0;
         } else {
             boostState.beamLen = R;
             const p = Math.min(1,(t-extendDur)/sweepDur);
@@ -1255,8 +1327,7 @@ function updateBoost(dt){
         const duration = 0.6;
         const p = Math.min(1, boostState.t / duration);
         boostState.flashAlpha = Math.sin(p * Math.PI) * 1.0;
-        drop.x = boostState.boostX;
-        drop.y = boostState.boostY;
+        drop.x = boostState.boostX; drop.y = boostState.boostY;
         drop.size = 2.5 * (1 - p) + 1 * p;
         drop.angle -= dt * 4;
         if(boostState.t >= duration){
@@ -1267,9 +1338,7 @@ function updateBoost(dt){
             drop.vx = (Math.random()-0.5) * 180;
             drop.vy = -150 - Math.random()*100;
             drop.angVel = (Math.random()-0.5)*6;
-            drop.hitCd = 0.3;
-            drop.sideCd = 0.3;
-            drop.contact = null;
+            drop.hitCd = 0.3; drop.sideCd = 0.3; drop.contact = null;
             drop.drift = (Math.random()<0.5?-1:1)*(45+Math.random()*65);
             drop.driftTimer = 0.8;
             const wb = boostState.pendingWorkbenches||0;
@@ -1293,12 +1362,13 @@ function updateBoost(dt){
 
 function damageBlock(r,c){
     const key=getBlock(r,c);
-    if(!key||key==='obsidian')return;
+    if(!key) return;
+    if(key==='obsidian' && !abyssMode) return;
     const rc=r+','+c;
-    const need=Math.min(10,(BLOCKS[key].hits||1)+Math.floor(r/40));
+    const need = abyssMode ? 1 : Math.min(10,(BLOCKS[key].hits||1)+Math.floor(r/40));
     const cur=(blockHp[rc]!==undefined)?blockHp[rc]:need;
     const nx=cur-1;
-    if(!godMode) drop.hp-=1;          // бессмертие: HP не тратится
+    if(!abyssMode && !godMode) drop.hp-=1;
     drop.hitCd=hitCdBase;
     drop.swingT=0;
     playDig(0.3);
@@ -1310,16 +1380,11 @@ function damageBlock(r,c){
         setBlock(r,c,null);
         const bounceAngle = -Math.PI/2 + (Math.random()-0.5)*(Math.PI*2/3);
         const bounceSpeed = 180 + Math.random()*120;
-        drop.vx = Math.cos(bounceAngle) * bounceSpeed;
-        drop.vy = Math.sin(bounceAngle) * bounceSpeed;
+        if(!abyssMode){ drop.vx = Math.cos(bounceAngle) * bounceSpeed; drop.vy = Math.sin(bounceAngle) * bounceSpeed; }
         drop.angVel += (Math.random()<0.5?-1:1)*(5+Math.random()*7) + drop.vx*0.015;
         if(Math.random()<0.5) drop.drift=(Math.random()<0.5?-1:1)*(45+Math.random()*65);
         if(key==='chest'){ chestsFound++; addFloat(wx,wy,'СУНДУК!','#fd0'); playDig(0.5); }
-        else if(key==='rainbow_crystal'){
-            addFloat(wx,wy,'БУСТЕР!','#f0f');
-            triggerBoost(r,c);
-            return;
-        }
+        else if(key==='rainbow_crystal'){ addFloat(wx,wy,'БУСТЕР!','#f0f'); triggerBoost(r,c); return; }
         else if(BLOCKS[key].mult){
             const gain=bet*BLOCKS[key].mult*moneyMult;
             roundWin+=gain; updateRoundUI();
@@ -1329,23 +1394,110 @@ function damageBlock(r,c){
     } else {
         blockHp[rc]=nx;
         addFloat(wx,wy,nx+'/'+need,'#fff');
-        drop.vy = Math.min(drop.vy, -(90 + Math.random()*60));
-        drop.vx += (Math.random()-0.5)*120;
+        if(!abyssMode){
+            drop.vy = Math.min(drop.vy, -(90 + Math.random()*60));
+            drop.vx += (Math.random()-0.5)*120;
+        }
         drop.angVel += (Math.random()-0.5)*3;
+    }
+    drop.angVel = Math.max(-6, Math.min(6, drop.angVel));
+}
+
+function nearestHoleInfo(){
+    let nd=1e9, hole=null;
+    for(const cb of abyssCubes){
+        const wx=cb.col*B+B/2;
+        const wy=cb.row*B+B/2 + Math.sin(tSec*2+cb.phase)*12;
+        const d=Math.hypot(drop.x-wx, drop.y-wy);
+        if(d<nd){ nd=d; hole={x:wx,y:wy}; }
+    }
+    return hole?{dist:nd,hole}:null;
+}
+
+function startDying(hole){
+    state='dying';
+    deathT=0;
+    dyingHole=hole;
+    cubeDeath=true;
+    abyssAudio = loadedAudio.abyss || null;
+    if(abyssAudio){
+        abyssAudio.loop = true;
+        abyssAudio.volume = 0;
+        abyssAudio.play().catch(()=>{ abyssAudio=null; });
+    }
+}
+function updateDying(dt){
+    deathT+=dt;
+    if(abyssAudio){ abyssAudio.volume = Math.min(1, deathT/2.5); }
+    if(dyingHole && drop){
+        drop.x+=(dyingHole.x-drop.x)*Math.min(1,4*dt);
+        drop.y+=(dyingHole.y-drop.y)*Math.min(1,4*dt);
+        drop.angle+=dt*6;
+    }
+    const p=Math.min(1,deathT/2.5);
+    lensK=0.6+p*1.1;
+    lensHX=screenW/2+((dyingHole.x-camX)-screenW/2)*viewZoom;
+    lensHY=screenH/2+((dyingHole.y-camY)-screenH/2)*viewZoom;
+    if(deathT>=2.5){
+        balance+=roundWin; updateBalanceUI(); addEarnings(roundWin);
+        drop=null; dyingHole=null; cubeDeath=false; cubeTime=0; lensK=0;
+        enterTesseract();
     }
 }
 
 function updateDrop(dt){
     if(!drop)return;
+    abyssMode = drop.y >= ABYSS_DEPTH*B;
+    if(abyssMode!==prevAbyss){
+        prevAbyss=abyssMode;
+        document.body.classList.toggle('abyss',abyssMode);
+        applyAbyssMusic();
+        if(abyssMode && !abyssAnnounced){ abyssAnnounced=true; addFloat(drop.x,drop.y-40,'🌌 БЕЗДНА','#7fff3f'); }
+    }
     drop.hitCd-=dt; drop.sideCd-=dt;
-    drop.vy+=800*dt;
-    const maxVy=B*10;
-    if(drop.vy>maxVy)drop.vy=maxVy;
-    drop.driftTimer-=dt;
-    if(drop.driftTimer<=0){ drop.driftTimer=1.4+Math.random()*1.4; drop.drift=(Math.random()<0.5?-1:1)*(45+Math.random()*65); }
-    drop.vx+=(drop.drift-drop.vx)*Math.min(1,2*dt);
-    drop.vx+=(Math.random()-0.5)*30*dt;
     const half=B*0.3*drop.size;
+
+    if(abyssMode){
+        const info=nearestHoleInfo();
+        let pX=0,pY=0;
+        if(info){
+            const nd=info.dist, hole=info.hole;
+            const Rpull=B*5;
+            if(nd<Rpull && nd>0.001){
+                const t=1-nd/Rpull;
+                const A=5000*t*t;
+                pX=(hole.x-drop.x)/nd*A;
+                pY=(hole.y-drop.y)/nd*A;
+            }
+            const inside = nd < B*1.4;
+            if(inside) cubeTime+=dt; else cubeTime=Math.max(0,cubeTime-dt*2);
+            lensK = inside ? 0.45+0.55*Math.min(1,cubeTime/3.5) : Math.max(0,1-nd/(B*6))*0.35;
+            lensHX=screenW/2+((hole.x-camX)-screenW/2)*viewZoom;
+            lensHY=screenH/2+((hole.y-camY)-screenH/2)*viewZoom;
+            if(cubeTime>3.5){ startDying(hole); return; }
+        } else { cubeTime=Math.max(0,cubeTime-dt); lensK=Math.max(0,lensK-dt*2); }
+
+        const kj=keyJoy();
+        const jx=Math.abs(joyX)>0.01?joyX:kj.x;
+        const jy=Math.abs(joyY)>0.01?joyY:kj.y;
+        const sp=B*6;
+        drop.vx+=(jx*sp-drop.vx)*Math.min(1,8*dt)+pX*dt;
+        drop.vy+=(jy*sp-drop.vy)*Math.min(1,8*dt)+pY*dt;
+        const spd=Math.hypot(drop.vx,drop.vy);
+        if(spd>10) drop.angle += spd*dt*0.004*(drop.vx>=0?1:-1);
+        else drop.angle += (0-drop.angle)*Math.min(1,4*dt);
+        drop.angVel*=(1-3*dt);
+    } else {
+        lensK=Math.max(0,lensK-dt*2);
+        drop.vy+=800*dt;
+        const maxVy=B*10;
+        if(drop.vy>maxVy)drop.vy=maxVy;
+        drop.driftTimer-=dt;
+        if(drop.driftTimer<=0){ drop.driftTimer=1.4+Math.random()*1.4; drop.drift=(Math.random()<0.5?-1:1)*(45+Math.random()*65); }
+        drop.vx+=(drop.drift-drop.vx)*Math.min(1,2*dt);
+        drop.vx+=(Math.random()-0.5)*30*dt;
+    }
+
     let newX=drop.x+drop.vx*dt;
     const rowC=Math.floor(drop.y/B);
     const colC0=Math.floor(drop.x/B);
@@ -1353,26 +1505,19 @@ function updateDrop(dt){
     const rightCol=Math.floor((newX+half)/B);
     if(drop.vx<0 && leftCol!==colC0 && getBlock(rowC,leftCol)){
         newX=(leftCol+1)*B+half;
-        if(drop.sideCd<=0 && Math.abs(drop.vx)>40 && drop.vy>-100){
-            damageBlock(rowC,leftCol);
-            drop.sideCd=0.2;
-            drop.vy=Math.max(drop.vy,-120);
-        }
+        if(drop.sideCd<=0 && Math.abs(drop.vx)>40 && drop.vy>-100){ damageBlock(rowC,leftCol); drop.sideCd=0.2; if(!abyssMode) drop.vy=Math.max(drop.vy,-120); }
         drop.vx=Math.abs(drop.vx)*0.4;
         drop.angVel+=2;
     } else if(drop.vx>0 && rightCol!==colC0 && getBlock(rowC,rightCol)){
         newX=rightCol*B-half;
-        if(drop.sideCd<=0 && Math.abs(drop.vx)>40 && drop.vy>-100){
-            damageBlock(rowC,rightCol);
-            drop.sideCd=0.2;
-            drop.vy=Math.max(drop.vy,-120);
-        }
+        if(drop.sideCd<=0 && Math.abs(drop.vx)>40 && drop.vy>-100){ damageBlock(rowC,rightCol); drop.sideCd=0.2; if(!abyssMode) drop.vy=Math.max(drop.vy,-120); }
         drop.vx=-Math.abs(drop.vx)*0.4;
         drop.angVel-=2;
     }
     if(newX-half<B){ newX=B+half; drop.vx=Math.abs(drop.vx)*0.4; }
     if(newX+half>(COLS+1)*B){ newX=(COLS+1)*B-half; drop.vx=-Math.abs(drop.vx)*0.4; }
     drop.x=newX;
+
     let newY=drop.y+drop.vy*dt;
     const colC=Math.floor(drop.x/B);
     drop.contact=null;
@@ -1381,17 +1526,20 @@ function updateDrop(dt){
     else { const rowT=Math.floor((newY-half)/B);
         if(getBlock(rowT,colC)){ newY=(rowT+1)*B+half+0.01; drop.vy=0; drop.contact={r:rowT,c:colC}; } }
     drop.y=newY;
+
     if(drop.contact && Math.abs(drop.vy)<1){
         const targetTilt=Math.max(-0.35,Math.min(0.35,drop.vx/600));
         drop.angVel+=(targetTilt-drop.angle)*14*dt;
         drop.angVel*=(1-10*dt);
-    } else {
+    } else if(!abyssMode){
         drop.angVel*=(1-0.25*dt);
     }
     drop.angle+=drop.angVel*dt;
+    drop.angVel = Math.max(-6, Math.min(6, drop.angVel));
     drop.swingT+=dt; drop.wobble+=dt;
     const sw = drop.swingT < 0.25 ? Math.sin((drop.swingT/0.25)*Math.PI) : 0;
     drop.swingOff = -0.5*sw + Math.sin(drop.wobble*4)*0.04;
+
     const centerRow=Math.floor(drop.y/B);
     const centerKey=getBlock(centerRow,colC);
     if(centerKey&&centerKey!=='obsidian'&&drop.hitCd<=0){ damageBlock(centerRow,colC); return; }
@@ -1420,14 +1568,10 @@ function updateDrop(dt){
                 updateRoundUI();
                 particles.push({x:wx,y:wy,vx:0,vy:0,life:0.5,size:B*4,color:'EXPLOSION'});
                 const ba = -Math.PI/2 + (Math.random()-0.5)*(Math.PI*2/3);
-                drop.vx = Math.cos(ba) * 280;
-                drop.vy = Math.sin(ba) * 280;
+                drop.vx = Math.cos(ba) * 280; drop.vy = Math.sin(ba) * 280;
                 drop.angVel+=(Math.random()<0.5?-1:1)*(6+Math.random()*8);
                 playDig(0.6); }
-            else if(bk==='rainbow_crystal'){
-                addFloat(wx,wy,'БУСТЕР!','#f0f');
-                triggerBoost(r,c);
-            }
+            else if(bk==='rainbow_crystal'){ addFloat(wx,wy,'БУСТЕР!','#f0f'); triggerBoost(r,c); }
             else damageBlock(r,c);
         }
     }
@@ -1439,6 +1583,93 @@ function updateDrop(dt){
     }
 }
 
+// ============================================================
+// ЧЁРНАЯ ДЫРА
+// ============================================================
+function drawBlackHole(x,y,t){
+    const R=B*0.9;
+    const tilt=-0.16+Math.sin(t*0.4)*0.05;
+    ctx.save();
+    ctx.translate(x, y + Math.sin(t*1.3)*5);
+    ctx.rotate(tilt);
+    ctx.globalCompositeOperation='lighter';
+    let g=ctx.createRadialGradient(0,0,R*0.4,0,0,R*4.2);
+    g.addColorStop(0,'rgba(255,170,90,0.42)');
+    g.addColorStop(0.25,'rgba(255,130,50,0.18)');
+    g.addColorStop(0.6,'rgba(180,70,25,0.07)');
+    g.addColorStop(1,'rgba(0,0,0,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath(); ctx.arc(0,0,R*4.2,0,Math.PI*2); ctx.fill();
+    const dw=R*3.6;
+    for(let i=0;i<3;i++){
+        const w=dw*(1-i*0.18), h=R*(0.34-i*0.10);
+        const dg=ctx.createLinearGradient(-w,0,w,0);
+        dg.addColorStop(0.00,'rgba(255,240,215,'+(0.75-i*0.18)+')');
+        dg.addColorStop(0.28,'rgba(255,252,240,'+(0.95-i*0.2)+')');
+        dg.addColorStop(0.46,'rgba(255,255,252,'+(1-i*0.25)+')');
+        dg.addColorStop(0.60,'rgba(255,214,150,'+(0.85-i*0.22)+')');
+        dg.addColorStop(1.00,'rgba(255,120,45,'+(0.5-i*0.13)+')');
+        ctx.fillStyle=dg;
+        ctx.beginPath(); ctx.ellipse(0,0,w,h,0,0,Math.PI*2); ctx.fill();
+    }
+    const cg=ctx.createLinearGradient(-dw,0,dw,0);
+    cg.addColorStop(0,'rgba(255,255,255,0.75)');
+    cg.addColorStop(0.5,'rgba(255,255,255,1)');
+    cg.addColorStop(1,'rgba(255,190,120,0.7)');
+    ctx.fillStyle=cg;
+    ctx.beginPath(); ctx.ellipse(0,0,dw*0.86,R*0.085,0,0,Math.PI*2); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+    ctx.fillStyle='#000';
+    ctx.beginPath(); ctx.arc(0,0,R,0,Math.PI*2); ctx.fill();
+    ctx.globalCompositeOperation='lighter';
+    const rg=ctx.createRadialGradient(0,0,R*0.85,0,0,R*1.55);
+    rg.addColorStop(0.00,'rgba(0,0,0,0)');
+    rg.addColorStop(0.18,'rgba(255,244,220,0.95)');
+    rg.addColorStop(0.38,'rgba(255,180,100,0.55)');
+    rg.addColorStop(1.00,'rgba(255,120,40,0)');
+    ctx.fillStyle=rg;
+    ctx.beginPath(); ctx.arc(0,0,R*1.55,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle='rgba(255,236,205,0.85)';
+    ctx.lineWidth=R*0.20;
+    ctx.beginPath(); ctx.arc(0,0,R*1.14,Math.PI*1.06,Math.PI*1.94); ctx.stroke();
+    ctx.beginPath(); ctx.arc(0,0,R*1.14,Math.PI*0.06,Math.PI*0.94); ctx.stroke();
+    ctx.save();
+    ctx.shadowColor='rgba(255,190,120,0.95)';
+    ctx.shadowBlur=R*0.4;
+    ctx.strokeStyle='rgba(255,250,240,0.95)';
+    ctx.lineWidth=R*0.05;
+    ctx.beginPath(); ctx.arc(0,0,R*1.03,0,Math.PI*2); ctx.stroke();
+    ctx.restore();
+    const fl=(Math.sin(t*2.3)+1)/2;
+    ctx.globalAlpha=0.10+0.14*fl;
+    ctx.strokeStyle='rgba(255,200,140,0.9)';
+    ctx.lineWidth=R*0.10;
+    const a0=(t*0.8)%(Math.PI*2);
+    ctx.beginPath(); ctx.arc(0,0,R*1.42,a0,a0+1.0); ctx.stroke();
+    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
+    ctx.restore();
+}
+
+function applyLens(k,hx,hy){
+    if(!lensBuffer) return;
+    lctx.clearRect(0,0,screenW,screenH);
+    lctx.drawImage(gameCanvas,0,0);
+    const steps=5;
+    for(let i=1;i<=steps;i++){
+        const f=i/steps;
+        const s=1-f*0.45*Math.min(1,k);
+        const a=0.12*k*(1-f*0.6);
+        const rot=f*0.05*k;
+        ctx.globalAlpha=Math.max(0,a);
+        ctx.save();
+        ctx.translate(hx,hy); ctx.rotate(rot); ctx.scale(s,s);
+        ctx.drawImage(lensBuffer, -hx, -hy);
+        ctx.restore();
+    }
+    ctx.globalAlpha=1;
+}
+
 function drawRainbowPick(x, y, size, angle){
     const img = sprites.rainbow_pick || loadedImages.rainbow_pick;
     if(!img) return;
@@ -1448,6 +1679,26 @@ function drawRainbowPick(x, y, size, angle){
     ctx.rotate(angle);
     ctx.drawImage(img, -s/2, -s/2, s, s);
     ctx.restore();
+}
+
+function drawSkull(x,y,s){
+    ctx.fillStyle='#e8e8e8';
+    ctx.fillRect(x-s/2, y-s/2, s, s*0.7);
+    ctx.fillRect(x-s*0.3, y+s*0.2, s*0.6, s*0.3);
+    ctx.fillStyle='#222';
+    ctx.fillRect(x-s*0.32, y-s*0.25, s*0.22, s*0.22);
+    ctx.fillRect(x+s*0.1, y-s*0.25, s*0.22, s*0.22);
+    ctx.fillRect(x-s*0.08, y+s*0.05, s*0.16, s*0.18);
+}
+function drawSign(){
+    if(camY > B*3) return;
+    const sx=2.5*B-camX, sy=-1.6*B-camY;
+    ctx.fillStyle='#6b421c'; ctx.fillRect(sx-B*0.08, sy+B*0.5, B*0.16, B*1.1);
+    ctx.fillStyle='#a8763e'; ctx.fillRect(sx-B*0.9, sy-B*0.55, B*1.8, B*1.1);
+    ctx.strokeStyle='#543312'; ctx.lineWidth=3; ctx.strokeRect(sx-B*0.9, sy-B*0.55, B*1.8, B*1.1);
+    ctx.fillStyle='#3a2410'; ctx.font=Math.floor(B*0.30)+'px VT323'; ctx.textAlign='center';
+    ctx.fillText('10.000 м', sx, sy-B*0.02);
+    drawSkull(sx, sy+B*0.28, B*0.45);
 }
 
 function drawBoostEffects(){
@@ -1469,46 +1720,30 @@ function drawBoostEffects(){
             const hue = (t*360 + i*60) % 360;
             ctx.globalAlpha = 0.3 * (1 - i*0.3);
             ctx.fillStyle = `hsl(${hue},100%,60%)`;
-            ctx.beginPath();
-            ctx.arc(x - camX, y - camY, 20*(1-i*0.2), 0, Math.PI*2);
-            ctx.fill();
+            ctx.beginPath(); ctx.arc(x - camX, y - camY, 20*(1-i*0.2), 0, Math.PI*2); ctx.fill();
         }
         ctx.globalAlpha = 1;
         const s = Math.round(B * 1.4 * drop.size);
         const img = pickSprite(drop.key, s);
-        if(img){
-            ctx.save();
-            ctx.translate(sx, sy);
-            ctx.rotate(drop.angle);
-            ctx.drawImage(img, -s/2, -s/2);
-            ctx.restore();
-        }
+        if(img){ ctx.save(); ctx.translate(sx, sy); ctx.rotate(drop.angle); ctx.drawImage(img, -s/2, -s/2); ctx.restore(); }
     }
     else if(phase === 'flash'){
         const s = Math.round(B * 1.4 * drop.size);
         const img = boostState.t > 0.4 ? (sprites.rainbow_pick || loadedImages.rainbow_pick) : pickSprite(drop.key, s);
         if(img){
-            ctx.save();
-            ctx.translate(sx, sy);
-            ctx.rotate(drop.angle);
+            ctx.save(); ctx.translate(sx, sy); ctx.rotate(drop.angle);
             if(boostState.t > 0.4) ctx.drawImage(img, -s/2, -s/2, s, s);
             else ctx.drawImage(img, -s/2, -s/2);
             ctx.restore();
         }
         ctx.globalAlpha = Math.min(1, boostState.flashAlpha) * 0.95;
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, screenW, screenH);
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, screenW, screenH);
         ctx.globalAlpha = Math.min(1, boostState.flashAlpha);
-        const rays = 16;
-        for(let i=0;i<rays;i++){
-            const ang = (i/rays)*Math.PI*2 + boostState.t*2;
-            const hue = (i/rays)*360;
-            ctx.strokeStyle = `hsl(${hue},100%,60%)`;
+        for(let i=0;i<16;i++){
+            const ang = (i/16)*Math.PI*2 + boostState.t*2;
+            ctx.strokeStyle = `hsl(${(i/16)*360},100%,60%)`;
             ctx.lineWidth = 10;
-            ctx.beginPath();
-            ctx.moveTo(sx, sy);
-            ctx.lineTo(sx + Math.cos(ang)*screenW, sy + Math.sin(ang)*screenW);
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(ang)*screenW, sy + Math.sin(ang)*screenW); ctx.stroke();
         }
         ctx.globalAlpha = 1;
     }
@@ -1516,32 +1751,22 @@ function drawBoostEffects(){
         const ang = boostState.beamAngle || 0;
         const len = boostState.beamLen || 0;
         if(ang > 0.01){
-            ctx.save();
-            ctx.globalAlpha = 0.20;
-            ctx.beginPath();
-            ctx.moveTo(sx, sy);
-            ctx.arc(sx, sy, R, 0, ang);
-            ctx.closePath();
+            ctx.save(); ctx.globalAlpha = 0.20;
+            ctx.beginPath(); ctx.moveTo(sx, sy); ctx.arc(sx, sy, R, 0, ang); ctx.closePath();
             const sg = ctx.createRadialGradient(sx, sy, 0, sx, sy, R);
             sg.addColorStop(0, 'rgba(255,255,255,0.9)');
             sg.addColorStop(0.4, 'rgba(255,0,255,0.5)');
             sg.addColorStop(1, 'rgba(0,255,255,0.15)');
-            ctx.fillStyle = sg;
-            ctx.fill();
+            ctx.fillStyle = sg; ctx.fill();
             ctx.restore();
         }
         if(len > 1){
             const ex = sx + Math.cos(ang)*len, ey = sy + Math.sin(ang)*len;
-            ctx.save();
-            ctx.globalAlpha = 0.95;
+            ctx.save(); ctx.globalAlpha = 0.95;
             const lg = ctx.createLinearGradient(sx, sy, ex, ey);
-            lg.addColorStop(0, '#ffffff');
-            lg.addColorStop(0.3, '#ff00ff');
-            lg.addColorStop(0.7, '#ffff00');
-            lg.addColorStop(1, '#00ffff');
-            ctx.strokeStyle = lg;
-            ctx.lineWidth = 26;
-            ctx.lineCap = 'round';
+            lg.addColorStop(0, '#ffffff'); lg.addColorStop(0.3, '#ff00ff');
+            lg.addColorStop(0.7, '#ffff00'); lg.addColorStop(1, '#00ffff');
+            ctx.strokeStyle = lg; ctx.lineWidth = 26; ctx.lineCap = 'round';
             ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
             ctx.lineWidth = 10; ctx.strokeStyle = '#fff';
             ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(ex, ey); ctx.stroke();
@@ -1555,41 +1780,26 @@ function drawBoostEffects(){
         ctx.fillStyle = glow;
         ctx.beginPath(); ctx.arc(sx, sy, 120, 0, Math.PI*2); ctx.fill();
         const progress = Math.round((boostState.beamProgress||0)*100);
-        ctx.fillStyle = '#fff';
-        ctx.font = '28px VT323';
-        ctx.textAlign = 'center';
+        ctx.fillStyle = '#fff'; ctx.font = '28px VT323'; ctx.textAlign = 'center';
         ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
         ctx.strokeText(`Разрушение: ${progress}%`, screenW/2, 50);
         ctx.fillText(`Разрушение: ${progress}%`, screenW/2, 50);
     }
     else if(phase === 'return'){
-        if(boostState.t < 0.3){
-            drawRainbowPick(sx, sy, drop.size, drop.angle);
-        } else {
+        if(boostState.t < 0.3){ drawRainbowPick(sx, sy, drop.size, drop.angle); }
+        else {
             const s = Math.round(B * 1.4 * drop.size);
             const img = pickSprite(drop.key, s);
-            if(img){
-                ctx.save();
-                ctx.translate(sx, sy);
-                ctx.rotate(drop.angle);
-                ctx.drawImage(img, -s/2, -s/2);
-                ctx.restore();
-            }
+            if(img){ ctx.save(); ctx.translate(sx, sy); ctx.rotate(drop.angle); ctx.drawImage(img, -s/2, -s/2); ctx.restore(); }
         }
         ctx.globalAlpha = Math.min(1, boostState.flashAlpha) * 0.8;
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(0, 0, screenW, screenH);
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, screenW, screenH);
         ctx.globalAlpha = Math.min(1, boostState.flashAlpha);
-        const rays = 16;
-        for(let i=0;i<rays;i++){
-            const ang = (i/rays)*Math.PI*2 + boostState.t*3;
-            const hue = (i/rays)*360;
-            ctx.strokeStyle = `hsl(${hue},100%,60%)`;
+        for(let i=0;i<16;i++){
+            const ang = (i/16)*Math.PI*2 + boostState.t*3;
+            ctx.strokeStyle = `hsl(${(i/16)*360},100%,60%)`;
             ctx.lineWidth = 8;
-            ctx.beginPath();
-            ctx.moveTo(sx, sy);
-            ctx.lineTo(sx + Math.cos(ang)*screenW, sy + Math.sin(ang)*screenW);
-            ctx.stroke();
+            ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(ang)*screenW, sy + Math.sin(ang)*screenW); ctx.stroke();
         }
         ctx.globalAlpha = 1;
     }
@@ -1597,9 +1807,32 @@ function drawBoostEffects(){
 
 function draw(){
     ctx.clearRect(0,0,screenW,screenH);
-    if(bgCache)ctx.drawImage(bgCache,0,0);
-    const dark=Math.min(0.55,Math.max(0,camY)/B*0.01);
-    if(dark>0){ctx.fillStyle=`rgba(0,0,0,${dark})`;ctx.fillRect(0,0,screenW,screenH);}
+    ctx.save();
+    if(viewZoom!==1){
+        ctx.translate(screenW/2,screenH/2); ctx.scale(viewZoom,viewZoom); ctx.translate(-screenW/2,-screenH/2);
+    }
+    if(state==='dying' && dyingHole){
+        const sx=dyingHole.x-camX, sy=dyingHole.y-camY;
+        const hx=screenW/2+(sx-screenW/2)*viewZoom, hy=screenH/2+(sy-screenH/2)*viewZoom;
+        const p=Math.min(1,deathT/2.5);
+        const sW=1-0.85*p*p;
+        ctx.translate(hx,hy); ctx.scale(sW,sW); ctx.translate(-hx,-hy);
+    }
+    const EX=screenW*1.5, EY=screenH*1.5;
+    const x0=screenW/2-EX, y0=screenH/2-EY;
+    const blend=Math.max(0,Math.min(1,(camY/B-BLEND_START)/(ABYSS_DEPTH-BLEND_START)));
+    if(bgCache) ctx.drawImage(bgCache,x0,y0,EX*2,EY*2);
+    if(blend>0){
+        ctx.globalAlpha=blend;
+        if(loadedImages.abyss_bg) ctx.drawImage(loadedImages.abyss_bg,x0,y0,EX*2,EY*2);
+        for(const st of STARS){
+            ctx.globalAlpha=blend*(0.25+0.55*Math.abs(Math.sin(tSec*1.5+st.p)));
+            ctx.fillStyle=st.c;
+            ctx.fillRect(x0+st.x*EX*2, y0+st.y*EY*2, 2, 2);
+        }
+        ctx.globalAlpha=blend*0.15; ctx.fillStyle='#2a0840'; ctx.fillRect(x0,y0,EX*2,EY*2);
+        ctx.globalAlpha=1;
+    }
     camX=((COLS+2)*B-screenW)/2;
     const r0=Math.max(0,Math.floor(camY/B)-1), r1=Math.floor((camY+screenH)/B)+1;
     ensureRows(r1);
@@ -1614,6 +1847,7 @@ function draw(){
             else{ctx.fillStyle=BLOCK_COLORS[key]||'#888';ctx.fillRect(sx,sy,B,B);}
         }
     }
+    drawSign();
     for(let i=particles.length-1;i>=0;i--){
         const p=particles[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=(p.color==='EXPLOSION'?0:0.4); p.life-=0.03;
         if(p.life<=0){particles.splice(i,1);continue;}
@@ -1623,17 +1857,28 @@ function draw(){
         else{ctx.fillStyle=p.color;ctx.fillRect(sx,sy,p.size,p.size);}
         ctx.globalAlpha=1;
     }
+    if(abyssMode && abyssCubes.length){
+        const rc0=Math.floor(camY/B)-6, rc1=Math.floor((camY+screenH)/B)+6;
+        for(const cb of abyssCubes){
+            if(cb.row<rc0||cb.row>rc1) continue;
+            const cxw=cb.col*B+B/2 - camX;
+            const cyw=cb.row*B+B/2 + Math.sin(tSec*2+cb.phase)*12 - camY;
+            drawBlackHole(cxw,cyw,tSec+cb.phase);
+        }
+    }
     if(state === 'boost'){
         drawBoostEffects();
     }
     else if(drop){
         const s=Math.round(B*1.4*drop.size);
-        const img=pickSprite(drop.key,s);
+        const img = abyssMode ? pickSprite('rainbow_pick', s) : pickSprite(drop.key,s);
         if(img){ctx.save();ctx.translate(drop.x-camX,drop.y-camY);ctx.rotate(drop.angle+(drop.swingOff||0));ctx.drawImage(img,-s/2,-s/2);ctx.restore();}
-        ctx.font='24px VT323';ctx.textAlign='center';ctx.lineWidth=4;ctx.strokeStyle='#000';
-        const hpText=`❤ ${Math.max(0,Math.ceil(drop.hp))}/${drop.maxHp}`;
-        ctx.strokeText(hpText,drop.x-camX,drop.y-camY-B);
-        ctx.fillStyle='#fff';ctx.fillText(hpText,drop.x-camX,drop.y-camY-B);
+        if(!abyssMode){
+            ctx.font='24px VT323';ctx.textAlign='center';ctx.lineWidth=4;ctx.strokeStyle='#000';
+            const hpText=`❤ ${Math.max(0,Math.ceil(drop.hp))}/${drop.maxHp}`;
+            ctx.strokeText(hpText,drop.x-camX,drop.y-camY-B);
+            ctx.fillStyle='#fff';ctx.fillText(hpText,drop.x-camX,drop.y-camY-B);
+        }
     }
     for(let i=floats.length-1;i>=0;i--){
         const f=floats[i]; f.y-=0.8; f.life-=0.02;
@@ -1649,26 +1894,61 @@ function draw(){
         }
         ctx.globalAlpha=1;
     }
+    ctx.restore();
+    if(lensK>0.02 && (state==='drop'||state==='dying')){
+        applyLens(lensK, lensHX, lensHY);
+        const k=Math.min(1,lensK);
+        const g2=ctx.createRadialGradient(lensHX,lensHY,0,lensHX,lensHY,Math.max(screenW,screenH)*0.7);
+        g2.addColorStop(0,'rgba(0,0,0,'+(0.92*k)+')');
+        g2.addColorStop(0.35,'rgba(0,0,0,'+(0.88*k)+')');
+        g2.addColorStop(0.45,'rgba(190,225,255,'+(0.55*k)+')');
+        g2.addColorStop(0.55,'rgba(120,180,255,'+(0.28*k)+')');
+        g2.addColorStop(0.75,'rgba(40,80,160,'+(0.10*k)+')');
+        g2.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=g2; ctx.fillRect(0,0,screenW,screenH);
+    }
+    if(state==='dying'){
+        const p=Math.min(1,deathT/2.5);
+        ctx.globalAlpha=p*p;
+        ctx.fillStyle='#000';
+        ctx.fillRect(0,0,screenW,screenH);
+        ctx.globalAlpha=1;
+    }
 }
+
 let lastGameT=0, fpsEma=60, fpsTimer=0;
 function gameLoop(ts){
     if(!lastGameT)lastGameT=ts;
     const rawDt=(ts-lastGameT)/1000;
-    const dt=Math.min(rawDt,0.05)*timeScale;   // ускорение времени x1/x2/x5
+    tSec+=rawDt;
+    const dt=Math.min(rawDt,0.05)*timeScale;
     lastGameT=ts;
     if(rawDt>0)fpsEma+=(1/rawDt-fpsEma)*0.05;
     fpsTimer+=rawDt;
     if(fpsTimer>0.5){fpsTimer=0;document.getElementById('fps').innerText=Math.round(fpsEma);}
+    if(tessActive){ requestAnimationFrame(gameLoop); return; }
+    const zTarget = abyssMode ? 1/3 : 1;
+    viewZoom += (zTarget-viewZoom)*Math.min(1,1.5*dt);
+    if(Math.abs(viewZoom-zTarget)<0.005) viewZoom=zTarget;
     try{
         if(state==='drop'&&drop){ updateDrop(dt); if(drop)camY+=(drop.y-screenH*0.35-camY)*0.1; }
         else if(state==='boost'&&drop){ updateBoost(dt); }
+        else if(state==='dying'){ updateDying(dt); }
         else if(state==='result'){ camY+=(-screenH*0.60-camY)*0.08; }
         else camY=-screenH*0.60;
+        const dUi=document.getElementById('depth-ui');
+        if((state==='drop'||state==='boost'||state==='dying')&&drop){
+            dUi.style.display='block';
+            dUi.textContent='Глубина: '+Math.max(0,Math.floor(drop.y/B));
+        } else dUi.style.display='none';
         draw();
     }catch(e){ console.error(e); document.getElementById('err-layer').innerText='LOOP ERR: '+e.message; }
     requestAnimationFrame(gameLoop);
 }
 
+// ============================================================
+// АПГРЕЙД
+// ============================================================
 let upgSel1=null, upgSel2=null, upgSpinning=false;
 const upgStrip=document.getElementById('upg-strip');
 const upgWindow=document.getElementById('upg-roulette-window');
@@ -1742,12 +2022,8 @@ document.getElementById('upg-btn').addEventListener('click',()=>{
     spinUpgRoulette(success?'check':'cross', ()=>{
         const src=upgSel1;
         removeItem(src);
-        if(success){
-            addItem(upgSel2,1);
-            msg.innerHTML=`✅ Успех! Получен <b>${rusName(upgSel2)}</b>`;
-        } else {
-            msg.innerHTML=`💀 Провал... <b>${rusName(src)}</b> сгорел`;
-        }
+        if(success){ addItem(upgSel2,1); msg.innerHTML=`✅ Успех! Получен <b>${rusName(upgSel2)}</b>`; }
+        else { msg.innerHTML=`💀 Провал... <b>${rusName(src)}</b> сгорел`; }
         upgSel1=null; upgSel2=null;
         drawSlot('upg-slot1',null); drawSlot('upg-slot2',null);
         updateUpgChance();
@@ -1804,11 +2080,9 @@ document.getElementById('dev-minus').addEventListener('click',()=>{
 document.getElementById('dev-item').addEventListener('click',()=>{
     openPicker('Выдать предмет', ['chest'].concat(ITEM_NAMES.slice().sort()), n=>{ addItem(n,1); renderInventory(); });
 });
-// Починить кирку
 document.getElementById('dev-repair').addEventListener('click',()=>{
     if(drop){ drop.hp=drop.maxHp; addFloat(drop.x,drop.y-20,'ПОЧИНЕНО!','#7f6'); }
 });
-// Заменить кирку
 document.getElementById('dev-replace').addEventListener('click',()=>{
     openPicker('Выбери кирку', Object.keys(PICK_ITEM_MAP), n=>{
         const k=PICK_ITEM_MAP[n];
@@ -1820,30 +2094,22 @@ document.getElementById('dev-replace').addEventListener('click',()=>{
         }
     });
 });
-// 100% победа
 document.getElementById('dev-win').addEventListener('click',e=>{
     alwaysWin=!alwaysWin;
     e.target.innerText='🎯 100% победа: '+(alwaysWin?'ВКЛ':'ВЫКЛ');
     updateUpgChance();
 });
-// Прыжок на глубину N
 document.getElementById('dev-jump').addEventListener('click',()=>{
     const n=Math.max(0, parseInt(document.getElementById('dev-depth').value)||0);
-    if(state==='drop'&&drop){
-        drop.y=n*B; drop.vy=0;
-        ensureRows(n+2);
-    }
+    if(state==='drop'&&drop){ drop.y=n*B; drop.vy=0; ensureRows(n+2); }
 });
-// Принудительно сломать кирку
 document.getElementById('dev-break').addEventListener('click',()=>{
     if(state==='drop'&&drop){ drop.hp=0; }
 });
-// Бессмертие
 document.getElementById('dev-god').addEventListener('click',e=>{
     godMode=!godMode;
     e.target.innerText='❄ Бессмертие: '+(godMode?'ВКЛ':'ВЫКЛ');
 });
-// Ускорение времени
 function setSpeed(x, btn){
     timeScale=x;
     document.querySelectorAll('.spd').forEach(b=>b.classList.remove('active'));
@@ -1852,7 +2118,6 @@ function setSpeed(x, btn){
 document.getElementById('dev-speed1').addEventListener('click',e=>setSpeed(1,e.target));
 document.getElementById('dev-speed2').addEventListener('click',e=>setSpeed(2,e.target));
 document.getElementById('dev-speed5').addEventListener('click',e=>setSpeed(5,e.target));
-// Бустер
 document.getElementById('dev-boost').addEventListener('click',()=>{
     devMenu.style.display='none';
     menuItems.forEach(mi => mi.classList.remove('active'));
@@ -1870,14 +2135,26 @@ document.getElementById('dev-boost').addEventListener('click',()=>{
 document.getElementById('dev-reset').addEventListener('click',()=>{ stopLaserSound(); localStorage.clear(); location.reload(); });
 
 // ============================================================
-// МУЗЫКА (кнопка в верхней панели)
+// МУЗЫКА
 // ============================================================
 const musicBtn=document.getElementById('music-btn');
+function applyAbyssMusic(){
+    const m=loadedAudio.music;
+    if(!m) return;
+    try{
+        if(abyssMode){ m.pause(); }
+        else {
+            m.playbackRate=1;
+            if(!musicOff){ m.volume=0.4; m.play().catch(()=>{}); }
+        }
+    }catch(e){}
+}
 function applyMusic(){
-    if(loadedAudio.music){
-        if(musicOff){ loadedAudio.music.pause(); }
-        else { loadedAudio.music.play().catch(()=>{}); }
-    }
+    const m=loadedAudio.music;
+    if(!m) return;
+    if(musicOff){ m.pause(); }
+    else { m.play().catch(()=>{}); }
+    applyAbyssMusic();
     musicBtn.textContent = musicOff ? '🔇' : '🎵';
     musicBtn.classList.toggle('off', musicOff);
 }
@@ -1888,14 +2165,185 @@ musicBtn.addEventListener('click',()=>{
 });
 
 // ============================================================
+// ТЕССЕРАКТ (Three.js) — поворот ТОЛЬКО этого слоя
+// ============================================================
+let tess = null;
+let tessMoveId=null, tessLookId=null, tessLastX=0, tessLastY=0, tessStick={x:0,y:0,ox:0,oy:0,active:false};
+
+function makeStripeTexture(){
+    const c=document.createElement('canvas'); c.width=64; c.height=256;
+    const x=c.getContext('2d');
+    x.fillStyle='#0d0906'; x.fillRect(0,0,64,256);
+    for(let y=0;y<256;y+=4){
+        const r=Math.random();
+        let col;
+        if(r<0.18) col='rgba(255,240,200,'+(0.5+Math.random()*0.5)+')';
+        else if(r<0.38) col='rgba(200,150,80,'+(0.25+Math.random()*0.4)+')';
+        else if(r<0.5) col='rgba(120,90,50,'+(0.15+Math.random()*0.3)+')';
+        else col='rgba(20,14,10,'+(0.6+Math.random()*0.4)+')';
+        x.fillStyle=col; x.fillRect(0,y,64,3);
+    }
+    const t=new THREE.CanvasTexture(c);
+    t.wrapS=t.wrapT=THREE.RepeatWrapping;
+    t.magFilter=THREE.NearestFilter;
+    return t;
+}
+function initTesseract(){
+    if(!window.THREE) return false;
+    const w=tessWrapEl.clientWidth||window.innerWidth, h=tessWrapEl.clientHeight||window.innerHeight;
+    const renderer=new THREE.WebGLRenderer({antialias:true});
+    renderer.setPixelRatio(Math.min(2,window.devicePixelRatio||1));
+    renderer.setSize(w,h,false);
+    tessWrapEl.innerHTML='';
+    tessWrapEl.appendChild(renderer.domElement);
+    const scene=new THREE.Scene();
+    scene.background=new THREE.Color(0x020103);
+    scene.fog=new THREE.FogExp2(0x020103, 0.028);
+    const camera=new THREE.PerspectiveCamera(75, w/h, 0.1, 300);
+    const N=5, S=16, W=N*S;
+    const group=new THREE.Group();
+    scene.add(group);
+    const stripe=makeStripeTexture();
+    const beamGeo=new THREE.BoxGeometry(S,0.7,0.7);
+    const beamMat=new THREE.MeshBasicMaterial({map:stripe});
+    const count=N*N*N*3;
+    const beams=new THREE.InstancedMesh(beamGeo, beamMat, count);
+    const m4=new THREE.Matrix4(); const q=new THREE.Quaternion(); const e=new THREE.Euler();
+    const pos=new THREE.Vector3(); const scl=new THREE.Vector3(1,1,1);
+    let idx=0;
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++)for(let k=0;k<N;k++){
+        e.set(0,0,0); q.setFromEuler(e); pos.set(i*S+S/2, j*S, k*S);
+        m4.compose(pos,q,scl); beams.setMatrixAt(idx++,m4);
+        e.set(0,0,Math.PI/2); q.setFromEuler(e); pos.set(i*S, j*S+S/2, k*S);
+        m4.compose(pos,q,scl); beams.setMatrixAt(idx++,m4);
+        e.set(0,Math.PI/2,0); q.setFromEuler(e); pos.set(i*S, j*S, k*S+S/2);
+        m4.compose(pos,q,scl); beams.setMatrixAt(idx++,m4);
+    }
+    beams.instanceMatrix.needsUpdate=true;
+    group.add(beams);
+    const panelGeo=new THREE.PlaneGeometry(S*0.92,S*0.92);
+    const panelMat=new THREE.MeshBasicMaterial({map:stripe, transparent:true, opacity:0.85, side:THREE.DoubleSide});
+    const panels=new THREE.InstancedMesh(panelGeo, panelMat, N*N*N*2);
+    idx=0;
+    for(let i=0;i<N;i++)for(let j=0;j<N;j++)for(let k=0;k<N;k++){
+        if(Math.random()<0.5){
+            e.set(0,0,0); q.setFromEuler(e); pos.set(i*S+S/2, j*S+S/2, k*S);
+            m4.compose(pos,q,scl); panels.setMatrixAt(idx++,m4);
+        } else {
+            e.set(0,Math.PI/2,0); q.setFromEuler(e); pos.set(i*S, j*S+S/2, k*S+S/2);
+            m4.compose(pos,q,scl); panels.setMatrixAt(idx++,m4);
+        }
+    }
+    panels.instanceMatrix.needsUpdate=true;
+    group.add(panels);
+    const dustGeo=new THREE.BufferGeometry();
+    const dn=400; const arr=new Float32Array(dn*3);
+    for(let i=0;i<dn;i++){ arr[i*3]=Math.random()*W; arr[i*3+1]=Math.random()*W; arr[i*3+2]=Math.random()*W; }
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(arr,3));
+    const dustMat=new THREE.PointsMaterial({color:0xffe6b0, size:0.18, transparent:true, opacity:0.7, blending:THREE.AdditiveBlending, depthWrite:false});
+    const dust=new THREE.Points(dustGeo,dustMat);
+    group.add(dust);
+    camera.position.set(W/2, W/2, W/2);
+    tess={ renderer, scene, camera, group, dust, W,
+        vel:new THREE.Vector3(), yaw:0, pitch:0, time:0, last:0 };
+    return true;
+}
+function tessResize(){
+    if(!tess) return;
+    const w=tessWrapEl.clientWidth||window.innerWidth, h=tessWrapEl.clientHeight||window.innerHeight;
+    tess.renderer.setSize(w,h,false);
+    tess.camera.aspect=w/h;
+    tess.camera.updateProjectionMatrix();
+}
+function enterTesseract(){
+    tessActive=true;
+    document.body.classList.add('tess');
+    setTessRotation();   // поворот ТОЛЬКО слоя тессеракта и только на телефоне в портрете
+    tessWrapEl.style.display='block';
+    void tessWrapEl.offsetWidth;
+    const ok=initTesseract();
+    const flash=document.getElementById('flash');
+    flash.style.opacity='1';
+    setTimeout(()=>{ flash.style.opacity='0'; },120);
+    if(!ok){ /* CDN недоступен: чёрный экран, музыка играет */ }
+    requestAnimationFrame(tessLoop);
+}
+function tessLoop(ts){
+    if(!tessActive) return;
+    requestAnimationFrame(tessLoop);
+    if(!tess) return;
+    const dt=Math.min(0.05,(ts-(tess.last||ts))/1000); tess.last=ts;
+    tess.time+=dt;
+    tess.group.rotation.y += dt*0.012;
+    tess.group.rotation.x = Math.sin(tess.time*0.07)*0.02;
+    let ix=tessStick.x, iy=tessStick.y;
+    if(keys['KeyW']||keys['ArrowUp']) iy=-1;
+    if(keys['KeyS']||keys['ArrowDown']) iy=1;
+    if(keys['KeyA']||keys['ArrowLeft']) ix=-1;
+    if(keys['KeyD']||keys['ArrowRight']) ix=1;
+    const fwd=new THREE.Vector3(0,0,-1).applyQuaternion(tess.camera.quaternion);
+    const right=new THREE.Vector3(1,0,0).applyQuaternion(tess.camera.quaternion);
+    const accel=new THREE.Vector3();
+    accel.addScaledVector(fwd, -iy*22);
+    accel.addScaledVector(right, ix*22);
+    tess.vel.addScaledVector(accel, dt);
+    tess.vel.multiplyScalar(1-1.6*dt);
+    tess.camera.position.addScaledVector(tess.vel, dt);
+    const W=tess.W;
+    ['x','y','z'].forEach(ax=>{
+        let v=tess.camera.position[ax];
+        v=((v%W)+W)%W;
+        tess.camera.position[ax]=v;
+    });
+    tess.camera.quaternion.setFromEuler(new THREE.Euler(tess.pitch+Math.sin(tess.time*0.5)*0.006, tess.yaw, Math.sin(tess.time*0.33)*0.006, 'YXZ'));
+    tess.renderer.render(tess.scene, tess.camera);
+}
+tessWrapEl.addEventListener('pointerdown',e=>{
+    const p=toLogical(e.clientX,e.clientY);
+    const half=(tessWrapEl.clientWidth||window.innerWidth)/2;
+    if(p.x<half){ tessMoveId=e.pointerId; tessStick.active=true; tessStick.ox=e.clientX; tessStick.oy=e.clientY; tessStick.x=0; tessStick.y=0; }
+    else { tessLookId=e.pointerId; tessLastX=e.clientX; tessLastY=e.clientY; }
+});
+tessWrapEl.addEventListener('pointermove',e=>{
+    if(e.pointerId===tessMoveId && tessStick.active){
+        const d=mapDelta(e.clientX-tessStick.ox, e.clientY-tessStick.oy);
+        const max=90;
+        const len=Math.hypot(d.x,d.y);
+        const k=Math.min(1,len/max);
+        tessStick.x=len>1?d.x/len*k:0;
+        tessStick.y=len>1?d.y/len*k:0;
+    } else if(e.pointerId===tessLookId && tess){
+        const d=mapDelta(e.clientX-tessLastX, e.clientY-tessLastY);
+        tess.yaw -= d.x*0.004;
+        tess.pitch -= d.y*0.004;
+        tess.pitch=Math.max(-1.2,Math.min(1.2,tess.pitch));
+        tessLastX=e.clientX; tessLastY=e.clientY;
+    }
+});
+function tessEnd(e){
+    if(e.pointerId===tessMoveId){ tessMoveId=null; tessStick.active=false; tessStick.x=0; tessStick.y=0; }
+    if(e.pointerId===tessLookId){ tessLookId=null; }
+}
+tessWrapEl.addEventListener('pointerup',tessEnd);
+tessWrapEl.addEventListener('pointercancel',tessEnd);
+
+// ============================================================
 // СТАРТ
 // ============================================================
 document.getElementById('start-btn').addEventListener('click',()=>{
     audioUnlocked=true; loadingActive=false;
     for(let i=0;i<3;i++){ const s=new Audio(assets.audio.dig); s.preload="auto"; digSoundPool.push(s); }
     sprites.cross=makeCross(64);
+    for(const k of Object.keys(loadedAudio)){
+        const a=loadedAudio[k];
+        try{
+            a.volume=0;
+            const p=a.play();
+            if(p) p.then(()=>{ a.pause(); a.currentTime=0; a.volume=(k==='music'?0.4:1.0); }).catch(()=>{});
+        }catch(e){}
+    }
     document.getElementById('loading-screen').style.display='none';
-    if(loadedAudio.music){ loadedAudio.music.loop=true; loadedAudio.music.volume=0.4; }
+    if(loadedAudio.music){ loadedAudio.music.loop=true; }
     applyMusic();
     loadInventory(); refreshBonuses(); loadProfile(); loadStats();
     if(localStorage.getItem('devMode'))showDev(true);
